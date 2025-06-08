@@ -1,12 +1,12 @@
 import streamlit as st
-import pandas as pd
-import gspread
 import requests
 from google.oauth2.service_account import Credentials
-from datetime import datetime
+from googleapiclient.discovery import build
+import pandas as pd
 
-# ===================== Google Sheets Setup =====================
-
+# -------------------------
+# Setup Google Sheets creds
+# -------------------------
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -17,78 +17,92 @@ credentials = Credentials.from_service_account_info(
     scopes=SCOPES
 )
 
-gc = gspread.authorize(credentials)
+# Google Sheets API service
+service = build('sheets', 'v4', credentials=credentials)
+sheet_id = "YOUR_SHEET_ID_HERE"  # <-- Replace with your actual Google Sheet ID
 
-# Open Google Sheet
-SHEET_NAME = "RestaurantHistory"  # Ensure this sheet exists
-WORKSHEET_NAME = "Sheet1"         # Ensure this worksheet exists
-sh = gc.open(SHEET_NAME)
-worksheet = sh.worksheet(WORKSHEET_NAME)
-
-def save_to_sheet(food, restaurant, rating, address, timestamp):
-    row = [timestamp, food, restaurant, rating, address]
-    worksheet.append_row(row)
-
-# ===================== Apify API Setup =====================
-
+# -----------------
+# Apify API settings
+# -----------------
 APIFY_API_TOKEN = st.secrets["apify_token"]["apify_token"]
-ACTOR_ID = "apify/google-maps-scraper"
+APIFY_ACTOR_ID = "apify/google-places-reviews"  # example actor to fetch Google Places reviews
 
-def fetch_restaurant_from_apify(food, location="Lagos, Nigeria"):
-    url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/run-sync-get-dataset-items?token={APIFY_API_TOKEN}"
-
+def run_apify_actor(place_id):
+    """
+    Run Apify actor to fetch reviews for a given Google Place ID.
+    """
+    url = f"https://api.apify.com/v2/actor-tasks/{APIFY_ACTOR_ID}/runs?token={APIFY_API_TOKEN}"
     payload = {
-        "searchStringsArray": [f"{food} in {location}"],
-        "maxCrawledPlacesPerSearch": 1,
-        "includeReviews": False,
-        "includeImages": False
+        "placeId": place_id
     }
-
     response = requests.post(url, json=payload)
+    response.raise_for_status()
+    run_data = response.json()
+    run_id = run_data['data']['id']
+    return run_id
 
-    if response.status_code == 200:
-        data = response.json()
-        if isinstance(data, list) and len(data) > 0:
-            result = data[0]
-            name = result.get("title", "Unknown")
-            rating = result.get("totalScore", 0.0)
-            address = result.get("address", "Not available")
-            return name, rating, address
-        else:
-            return None, None, None
+def get_apify_run_results(run_id):
+    """
+    Get results of a run after completion.
+    """
+    url = f"https://api.apify.com/v2/actor-runs/{run_id}/dataset/items?token={APIFY_API_TOKEN}"
+    # Polling until finished, for simplicity just a one-time get here
+    response = requests.get(url)
+    response.raise_for_status()
+    return response.json()
+
+def append_to_sheet(values):
+    """
+    Append rows to Google Sheet.
+    """
+    body = {
+        'values': values
+    }
+    result = service.spreadsheets().values().append(
+        spreadsheetId=sheet_id,
+        range="Sheet1!A1",
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body=body
+    ).execute()
+    return result
+
+# -------------------
+# Streamlit UI starts
+# -------------------
+st.title("Restaurant Reviews Fetcher with Apify & Google Sheets")
+
+place_id = st.text_input("Enter Google Place ID:", "")
+
+if st.button("Fetch Reviews"):
+    if not place_id.strip():
+        st.error("Please enter a valid Google Place ID.")
     else:
-        st.error(f"Apify error: {response.status_code} - {response.text}")
-        return None, None, None
+        with st.spinner("Starting Apify actor..."):
+            try:
+                run_id = run_apify_actor(place_id)
+                st.success(f"Apify run started with ID: {run_id}")
+            except Exception as e:
+                st.error(f"Failed to start Apify actor: {e}")
+                st.stop()
 
-# ===================== Streamlit UI =====================
+        with st.spinner("Fetching results... (may take a few seconds)"):
+            try:
+                results = get_apify_run_results(run_id)
+                if not results:
+                    st.warning("No reviews found or run is not completed yet.")
+                    st.stop()
 
-st.set_page_config(page_title="Restaurant Recommender", page_icon="🍽️")
-st.title("🍽️ Restaurant Recommender with Apify + Google Sheets")
+                # Convert to DataFrame
+                df = pd.DataFrame(results)
+                st.write("Fetched reviews:")
+                st.dataframe(df)
 
-food = st.text_input("Enter food type (e.g., pizza, sushi)", placeholder="pizza")
-location = st.text_input("Enter location", value="Lagos, Nigeria")
+                # Prepare values to append
+                # Example: append review author and text columns only
+                values = df[['authorName', 'text']].fillna('').values.tolist()
+                append_to_sheet(values)
+                st.success("Reviews appended to Google Sheet!")
 
-if st.button("🔍 Recommend"):
-    if food:
-        with st.spinner("Fetching recommendation from Apify..."):
-            restaurant, rating, address = fetch_restaurant_from_apify(food, location)
-
-        if restaurant:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.success(f"**Recommended Restaurant:** {restaurant}\n\n⭐ **Rating:** {rating}\n📍 **Address:** {address}")
-            save_to_sheet(food, restaurant, rating, address, timestamp)
-        else:
-            st.warning("No restaurant found. Try a different query.")
-    else:
-        st.warning("Please enter a food type.")
-
-# ===================== Show History =====================
-
-with st.expander("📜 View Search History"):
-    data = worksheet.get_all_records()
-    if data:
-        df = pd.DataFrame(data)
-        df.columns = ["Timestamp", "Food", "Restaurant", "Rating", "Address"]
-        st.dataframe(df)
-    else:
-        st.write("No history yet.")
+            except Exception as e:
+                st.error(f"Failed to fetch or save reviews: {e}")
