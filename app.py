@@ -88,7 +88,7 @@ if st.session_state.page == "Recommend":
     with col1:
         location = st.text_input("📍 Location", placeholder="e.g., Lagos, Nairobi")
 
-    apify_api_key = st.secrets.get("apify_token", "")
+    apify_api_key = st.secrets.get("apify_api_key", "")
 
     if st.button("🔍 Search"):
         if not food or not location:
