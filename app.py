@@ -82,10 +82,10 @@ if st.session_state.page == "Recommend":
     st.title("🍽️ AI Restaurant Recommender")
     st.markdown("Find top restaurants using **Apify** and **AI sentiment analysis**.")
 
-    col1, _ = st.columns([1, 1])
+    col1, col2 = st.columns(2)
     with col1:
         food = st.text_input("🍕 Food Type", placeholder="e.g., Sushi, Pizza, Jollof")
-    with col1:
+    with col2:
         location = st.text_input("📍 Location", placeholder="e.g., Lagos, Nairobi")
 
     apify_api_key = st.secrets.get("apify_api_key", "")
@@ -98,62 +98,63 @@ if st.session_state.page == "Recommend":
         else:
             st.session_state.results = None
             with st.spinner("Scraping and analyzing..."):
-                # Start Apify task to scrape reviews
-                url = "https://api.apify.com/v2/actor-tasks/restaurant-review-scraper/run-sync-get-dataset-items?token=" + apify_api_key
+                url = f"https://api.apify.com/v2/actor-tasks/restaurant-review-scraper/run-sync-get-dataset-items?token={apify_api_key}"
                 payload = {
                     "location": location,
                     "query": food
                 }
                 response = requests.post(url, json=payload)
-                data = response.json()
-
-                classifier = get_classifier()
-                results = []
-
-                for r in data[:10]:  # Limit to top 10
-                    name = r.get("name", "")
-                    address = r.get("address", "")
-                    reviews = r.get("reviews", [])
-
-                    sentiments = []
-                    review_texts = []
-                    for review in reviews[:5]:  # Analyze max 5 reviews
-                        text = review.get("text", "")
-                        if text:
-                            sentiment = classifier(text[:512])[0]
-                            stars = int(sentiment["label"].split()[0])
-                            sentiments.append(stars)
-                            review_texts.append(text)
-
-                    avg_rating = round(sum(sentiments) / len(sentiments), 2) if sentiments else 0
-                    if sentiments:
-                        results.append({
-                            "Restaurant": name,
-                            "Address": address,
-                            "Rating": avg_rating,
-                            "Stars": "⭐" * int(round(avg_rating)),
-                            "Reviews": len(sentiments),
-                            "Tips": review_texts
-                        })
-
-                if results:
-                    df = pd.DataFrame([{
-                        "Restaurant": r["Restaurant"],
-                        "Address": r["Address"],
-                        "Rating": r["Rating"],
-                        "Stars": r["Stars"],
-                        "Reviews": r["Reviews"]
-                    } for r in results])
-                    df.index += 1
-                    st.session_state.results = results
-                    st.dataframe(df, use_container_width=True)
+                if response.status_code != 200:
+                    st.error(f"Apify API error: {response.status_code} {response.text}")
                 else:
-                    st.warning("No valid reviews found.")
+                    data = response.json()
+                    classifier = get_classifier()
+                    results = []
+
+                    for r in data[:10]:  # Limit to top 10
+                        name = r.get("name", "")
+                        address = r.get("address", "")
+                        reviews = r.get("reviews", [])
+
+                        sentiments = []
+                        review_texts = []
+                        for review in reviews[:5]:  # Analyze max 5 reviews
+                            text = review.get("text", "")
+                            if text:
+                                sentiment = classifier(text[:512])[0]
+                                stars = int(sentiment["label"].split()[0])
+                                sentiments.append(stars)
+                                review_texts.append(text)
+
+                        avg_rating = round(sum(sentiments) / len(sentiments), 2) if sentiments else 0
+                        if sentiments:
+                            results.append({
+                                "Restaurant": name,
+                                "Address": address,
+                                "Rating": avg_rating,
+                                "Stars": "⭐" * int(round(avg_rating)),
+                                "Reviews": len(sentiments),
+                                "Tips": review_texts
+                            })
+
+                    if results:
+                        df = pd.DataFrame([{
+                            "Restaurant": r["Restaurant"],
+                            "Address": r["Address"],
+                            "Rating": r["Rating"],
+                            "Stars": r["Stars"],
+                            "Reviews": r["Reviews"]
+                        } for r in results])
+                        df.index += 1
+                        st.session_state.results = results
+                        st.dataframe(df, use_container_width=True)
+                    else:
+                        st.warning("No valid reviews found.")
 
     # --- DISPLAY RESULTS ---
     if st.session_state.get("results"):
         top3 = sorted(st.session_state.results, key=lambda x: x["Rating"], reverse=True)[:3]
-        st.divider()
+        st.markdown("---")
         st.subheader("🏅 Top Picks")
 
         cols = st.columns(3)
